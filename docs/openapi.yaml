@@ -1,0 +1,606 @@
+openapi: 3.1.0
+info:
+  title: RTL Admin Demo API
+  version: 1.0.0
+  description: |
+    JSON API behind the Vue SPA. Seeded demo data only.
+
+    **Auth**: Sanctum SPA cookie session. Call `GET /sanctum/csrf-cookie`, then `POST /api/login`
+    with the `X-XSRF-TOKEN` header (value of the `XSRF-TOKEN` cookie) and a same-site `Referer`/`Origin`.
+    Every other `/api` route needs the session cookie.
+
+    **Language**: send `X-Locale: ar` (default) or `X-Locale: en`; validation and other messages follow it.
+    Document links (`/documents/...`) accept `?lang=ar|en` instead.
+
+    **Roles**: `admin` (everything), `staff` (create/edit, email invoices, no deletes, no error log),
+    `viewer` (read-only). A forbidden action answers `403` with a translated `message`.
+
+    **Rate limits**: login 5/min per email+IP and 20/min per IP; sending an invoice 5/min and 30/hour per user;
+    invoice documents (PDF, email preview) 20/min per user; other API calls 120/min per user. Behind a reverse
+    proxy set `TRUSTED_PROXIES` so per-IP limits see the real client IP.
+license:
+  name: MIT
+servers:
+  - url: http://127.0.0.1:8000
+security:
+  - session: []
+tags:
+  - name: Auth
+  - name: Dashboard
+  - name: Customers
+  - name: Orders
+  - name: Invoices
+  - name: Error log
+  - name: Users
+
+paths:
+  /sanctum/csrf-cookie:
+    get:
+      tags: [Auth]
+      summary: Set the XSRF-TOKEN cookie before logging in
+      security: []
+      responses:
+        '204': { description: Cookie set }
+
+  /api/login:
+    post:
+      tags: [Auth]
+      summary: Log in (starts a cookie session)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email, example: demo@example.com }
+                password: { type: string, example: password }
+                remember: { type: boolean }
+      responses:
+        '200': { description: Logged in, content: { application/json: { schema: { $ref: '#/components/schemas/UserEnvelope' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/logout:
+    post:
+      tags: [Auth]
+      summary: Log out and invalidate the session
+      responses:
+        '204': { description: Logged out }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /api/user:
+    get:
+      tags: [Auth]
+      summary: The signed-in user, with a `can` map of UI abilities
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/UserEnvelope' } } } }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+
+  /api/dashboard:
+    get:
+      tags: [Dashboard]
+      summary: KPIs, daily order value and recent orders
+      description: |
+        Without `from`/`to` the period is the last 30 days. The range may not exceed one year.
+        "Order value" is the sum of non-cancelled order totals by order date, invoiced or not; it is not collected revenue.
+      parameters:
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/DashboardEnvelope' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/customers:
+    get:
+      tags: [Customers]
+      summary: List customers (all roles)
+      description: Search is Arabic-aware (tashkeel ignored, alef/hamza/taa marbuta/ya variants and Arabic-Indic digits normalised).
+      parameters:
+        - $ref: '#/components/parameters/search'
+        - { name: sort, in: query, schema: { type: string, enum: [name, email, city, orders_count, created_at] } }
+        - $ref: '#/components/parameters/direction'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/per_page'
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerPage' } } } }
+    post:
+      tags: [Customers]
+      summary: Create a customer (admin, staff)
+      requestBody: { $ref: '#/components/requestBodies/Customer' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/customers/{customer}:
+    parameters:
+      - { name: customer, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Customers]
+      summary: Show a customer
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerEnvelope' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Customers]
+      summary: Update a customer (admin, staff)
+      requestBody: { $ref: '#/components/requestBodies/Customer' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    patch:
+      tags: [Customers]
+      summary: Same as PUT
+      requestBody: { $ref: '#/components/requestBodies/Customer' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/CustomerEnvelope' } } } }
+    delete:
+      tags: [Customers]
+      summary: Delete a customer (admin)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: The customer has orders, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+
+  /api/orders:
+    get:
+      tags: [Orders]
+      summary: List orders (all roles)
+      parameters:
+        - $ref: '#/components/parameters/search'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/OrderStatus' } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+        - { name: without_invoice, in: query, description: 'Only orders that can still be invoiced (no invoice, not cancelled)', schema: { type: integer, enum: [0, 1] } }
+        - { name: sort, in: query, schema: { type: string, enum: [number, ordered_at, total, status, customer] } }
+        - $ref: '#/components/parameters/direction'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/per_page'
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OrderPage' } } } }
+    post:
+      tags: [Orders]
+      summary: Create an order with items (admin, staff)
+      requestBody: { $ref: '#/components/requestBodies/Order' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/OrderEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/orders/export:
+    get:
+      tags: [Orders]
+      summary: CSV export of the filtered orders (UTF-8 with BOM, formula cells neutralised)
+      parameters:
+        - $ref: '#/components/parameters/search'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/OrderStatus' } }
+        - { name: from, in: query, schema: { type: string, format: date } }
+        - { name: to, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: CSV file, content: { text/csv: { schema: { type: string } } } }
+
+  /api/orders/{order}:
+    parameters:
+      - { name: order, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Orders]
+      summary: Show an order with its items
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OrderEnvelope' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Orders]
+      summary: Update an order, replacing its items (admin, staff)
+      requestBody: { $ref: '#/components/requestBodies/Order' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OrderEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: Items or customer locked by a paid invoice, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    patch:
+      tags: [Orders]
+      summary: Same as PUT
+      requestBody: { $ref: '#/components/requestBodies/Order' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/OrderEnvelope' } } } }
+    delete:
+      tags: [Orders]
+      summary: Delete an order with its items and unpaid invoice (admin)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: The order has a paid invoice, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+
+  /api/invoices:
+    get:
+      tags: [Invoices]
+      summary: List invoices (all roles)
+      parameters:
+        - $ref: '#/components/parameters/search'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/InvoiceStatus' } }
+        - { name: sort, in: query, schema: { type: string, enum: [number, issued_at, due_at, amount, status, customer] } }
+        - $ref: '#/components/parameters/direction'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/per_page'
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InvoicePage' } } } }
+    post:
+      tags: [Invoices]
+      summary: Create an invoice for an order (admin, staff); amount and customer come from the order
+      requestBody: { $ref: '#/components/requestBodies/Invoice' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /api/invoices/{invoice}:
+    parameters:
+      - { name: invoice, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Invoices]
+      summary: Show an invoice with customer and order items
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceEnvelope' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Invoices]
+      summary: Update an invoice (admin, staff)
+      description: |
+        `order_id` cannot change (422). A paid invoice only accepts a change of `notes`;
+        any other change answers 409 (use the admin-only reopen action first).
+      requestBody: { $ref: '#/components/requestBodies/Invoice' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: The invoice is paid, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    patch:
+      tags: [Invoices]
+      summary: Same as PUT
+      requestBody: { $ref: '#/components/requestBodies/Invoice' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceEnvelope' } } } }
+    delete:
+      tags: [Invoices]
+      summary: Delete an invoice (admin; not when paid)
+      responses:
+        '204': { description: Deleted }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: The invoice is paid, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+
+  /api/invoices/{invoice}/reopen:
+    post:
+      tags: [Invoices]
+      summary: Take a paid invoice out of paid (admin)
+      description: Becomes `overdue` when the due date has passed, otherwise `draft`.
+      parameters:
+        - { name: invoice, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Reopened, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { description: The invoice is not paid, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+
+  /api/invoices/{invoice}/email:
+    post:
+      tags: [Invoices]
+      summary: Email the invoice with the PDF attached to the customer (admin, staff)
+      description: With the default `MAIL_MAILER=log` the message is written to the application log.
+      parameters:
+        - { name: invoice, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Sent, content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /documents/invoices/{invoice}.pdf:
+    get:
+      tags: [Invoices]
+      summary: Invoice PDF (server-rendered, Arabic RTL or English)
+      description: Web route on the session guard, so it works as a plain download link. Guests are redirected to /login.
+      parameters:
+        - { name: invoice, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/lang'
+      responses:
+        '200': { description: PDF file, content: { application/pdf: { schema: { type: string, format: binary } } } }
+        '429': { description: Too many document requests }
+        '302': { description: 'Not signed in: redirect to /login' }
+        '404': { description: Unknown invoice }
+
+  /documents/invoices/{invoice}/email:
+    get:
+      tags: [Invoices]
+      summary: The invoice email rendered as HTML (preview)
+      parameters:
+        - { name: invoice, in: path, required: true, schema: { type: integer } }
+        - $ref: '#/components/parameters/lang'
+      responses:
+        '200': { description: HTML email body, content: { text/html: { schema: { type: string } } } }
+        '302': { description: 'Not signed in: redirect to /login' }
+
+  /api/error-events:
+    get:
+      tags: [Error log]
+      summary: Grouped exceptions (admin)
+      parameters:
+        - $ref: '#/components/parameters/search'
+        - { name: status, in: query, schema: { type: string, enum: [unresolved, resolved] } }
+        - { name: sort, in: query, schema: { type: string, enum: [last_seen_at, first_seen_at, count] } }
+        - $ref: '#/components/parameters/direction'
+        - $ref: '#/components/parameters/page'
+        - $ref: '#/components/parameters/per_page'
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEventPage' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/error-events/trigger:
+    post:
+      tags: [Error log]
+      summary: Throw a test exception so the handler records it (admin, only when APP_ENV=local)
+      responses:
+        '500': { description: The test exception (recorded in the error log) }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { description: Not available outside APP_ENV=local }
+
+  /api/error-events/{error_event}:
+    parameters:
+      - { name: error_event, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Error log]
+      summary: Issue detail with stack trace (admin)
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEventEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    patch:
+      tags: [Error log]
+      summary: Mark resolved or reopen (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [resolved], properties: { resolved: { type: boolean } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEventEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Error log]
+      summary: Same as PATCH
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [resolved], properties: { resolved: { type: boolean } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorEventEnvelope' } } } }
+
+  /api/users:
+    get:
+      tags: [Users]
+      summary: List users and their roles (admin)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/User' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /api/users/{user}:
+    patch:
+      tags: [Users]
+      summary: Change another user's role (admin; not your own)
+      parameters:
+        - { name: user, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [role], properties: { role: { $ref: '#/components/schemas/Role' } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/UserEnvelope' } } } }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+components:
+  securitySchemes:
+    session:
+      type: apiKey
+      in: cookie
+      name: laravel_session
+      description: Session cookie from POST /api/login (plus the X-XSRF-TOKEN header on writes).
+
+  parameters:
+    search: { name: search, in: query, schema: { type: string, maxLength: 100 } }
+    direction: { name: direction, in: query, schema: { type: string, enum: [asc, desc] } }
+    page: { name: page, in: query, schema: { type: integer, minimum: 1 } }
+    per_page: { name: per_page, in: query, schema: { type: integer, minimum: 5, maximum: 100, default: 10 } }
+    lang: { name: lang, in: query, schema: { type: string, enum: [ar, en], default: ar } }
+
+  requestBodies:
+    Customer:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, email]
+            properties:
+              name: { type: string, minLength: 2, maxLength: 120 }
+              email: { type: string, format: email, description: Stored lower-cased; unique }
+              phone: { type: [string, 'null'], maxLength: 40, pattern: '^[0-9+\-\s()]+$' }
+              city: { type: [string, 'null'], maxLength: 80 }
+              notes: { type: [string, 'null'], maxLength: 1000 }
+    Order:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [customer_id, status, ordered_at, items]
+            properties:
+              customer_id: { type: integer }
+              status: { $ref: '#/components/schemas/OrderStatus' }
+              ordered_at: { type: string, format: date }
+              notes: { type: [string, 'null'], maxLength: 1000 }
+              items:
+                type: array
+                minItems: 1
+                maxItems: 20
+                items:
+                  type: object
+                  required: [product_name, quantity, unit_price]
+                  properties:
+                    product_name: { type: string, minLength: 2, maxLength: 120 }
+                    quantity: { type: integer, minimum: 1, maximum: 999 }
+                    unit_price: { type: number, minimum: 0.01, maximum: 99999, description: At most 2 decimals }
+    Invoice:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [order_id, status, issued_at, due_at]
+            properties:
+              order_id: { type: integer, description: 'One invoice per order; cancelled orders are rejected; cannot change after creation' }
+              status: { $ref: '#/components/schemas/InvoiceStatus' }
+              issued_at: { type: string, format: date }
+              due_at: { type: string, format: date, description: On or after issued_at }
+              notes: { type: [string, 'null'], maxLength: 1000 }
+
+  responses:
+    Unauthenticated:
+      description: Not signed in
+      content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } }
+    Forbidden:
+      description: The role does not allow this action
+      content: { application/json: { schema: { $ref: '#/components/schemas/Message' }, example: { message: ليست لديك صلاحية لهذا الإجراء. } } }
+    NotFound:
+      description: Not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } }
+    TooManyRequests:
+      description: Rate limited (see the Retry-After header)
+      content: { application/json: { schema: { $ref: '#/components/schemas/Message' } } }
+    ValidationError:
+      description: Validation failed; messages follow X-Locale
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message: { type: string }
+              errors: { type: object, additionalProperties: { type: array, items: { type: string } } }
+          example: { message: حقل الاسم مطلوب., errors: { name: [حقل الاسم مطلوب.] } }
+
+  schemas:
+    Message: { type: object, properties: { message: { type: string } } }
+    Role: { type: string, enum: [admin, staff, viewer] }
+    OrderStatus: { type: string, enum: [pending, processing, completed, cancelled] }
+    InvoiceStatus: { type: string, enum: [draft, paid, overdue] }
+    PageMeta:
+      type: object
+      properties:
+        current_page: { type: integer }
+        last_page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+        from: { type: [integer, 'null'] }
+        to: { type: [integer, 'null'] }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        created_at: { type: string, format: date-time }
+        can: { type: object, additionalProperties: { type: boolean }, description: 'Only for the signed-in user, e.g. "orders.create": true' }
+    UserEnvelope: { type: object, properties: { data: { $ref: '#/components/schemas/User' } } }
+    Customer:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        phone: { type: [string, 'null'] }
+        city: { type: [string, 'null'] }
+        notes: { type: [string, 'null'] }
+        orders_count: { type: integer }
+        created_at: { type: string, format: date-time }
+    CustomerEnvelope: { type: object, properties: { data: { $ref: '#/components/schemas/Customer' } } }
+    CustomerPage: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Customer' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }
+    OrderItem:
+      type: object
+      properties:
+        id: { type: integer }
+        product_name: { type: string }
+        quantity: { type: integer }
+        unit_price: { type: number }
+        line_total: { type: number }
+    Order:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string, example: ORD-10001 }
+        customer_id: { type: integer }
+        customer: { type: object, properties: { id: { type: integer }, name: { type: string } } }
+        status: { $ref: '#/components/schemas/OrderStatus' }
+        ordered_at: { type: string, format: date }
+        total: { type: number }
+        notes: { type: [string, 'null'] }
+        items_count: { type: integer }
+        items: { type: array, items: { $ref: '#/components/schemas/OrderItem' } }
+        invoice: { type: [object, 'null'], properties: { id: { type: integer }, number: { type: string }, status: { $ref: '#/components/schemas/InvoiceStatus' } } }
+    OrderEnvelope: { type: object, properties: { data: { $ref: '#/components/schemas/Order' } } }
+    OrderPage: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Order' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }
+    Invoice:
+      type: object
+      properties:
+        id: { type: integer }
+        number: { type: string, example: INV-01001 }
+        order_id: { type: integer }
+        order: { type: object, properties: { id: { type: integer }, number: { type: string }, ordered_at: { type: string, format: date }, total: { type: number }, items: { type: [array, 'null'], items: { $ref: '#/components/schemas/OrderItem' } } } }
+        customer: { $ref: '#/components/schemas/Customer' }
+        status: { $ref: '#/components/schemas/InvoiceStatus' }
+        amount: { type: number }
+        issued_at: { type: string, format: date }
+        due_at: { type: string, format: date }
+        notes: { type: [string, 'null'] }
+    InvoiceEnvelope: { type: object, properties: { data: { $ref: '#/components/schemas/Invoice' } } }
+    InvoicePage: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/Invoice' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }
+    ErrorEvent:
+      type: object
+      properties:
+        id: { type: integer }
+        fingerprint: { type: string }
+        exception_class: { type: string }
+        message: { type: string }
+        file: { type: string }
+        line: { type: integer }
+        count: { type: integer }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        resolved_at: { type: [string, 'null'], format: date-time }
+        method: { type: [string, 'null'], description: Detail only }
+        url: { type: [string, 'null'], description: 'Detail only: request path, the query string is never stored' }
+        trace: { type: array, description: Detail only, items: { type: object, properties: { file: { type: [string, 'null'] }, line: { type: [integer, 'null'] }, function: { type: string } } } }
+    ErrorEventEnvelope: { type: object, properties: { data: { $ref: '#/components/schemas/ErrorEvent' } } }
+    ErrorEventPage: { type: object, properties: { data: { type: array, items: { $ref: '#/components/schemas/ErrorEvent' } }, meta: { $ref: '#/components/schemas/PageMeta' } } }
+    DashboardEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            period: { type: object, properties: { from: { type: string, format: date }, to: { type: string, format: date }, days: { type: integer } } }
+            kpis:
+              type: object
+              properties:
+                order_value: { type: object, properties: { value: { type: number }, change: { type: [number, 'null'], description: '% vs previous period' } } }
+                orders: { type: object, properties: { value: { type: integer }, change: { type: [number, 'null'] } } }
+                customers: { type: object, properties: { value: { type: integer }, new: { type: integer } } }
+                overdue_invoices: { type: object, properties: { value: { type: integer }, amount: { type: number } } }
+            chart: { type: array, items: { type: object, properties: { date: { type: string, format: date }, order_value: { type: number } } } }
+            recent_orders: { type: array, items: { type: object } }

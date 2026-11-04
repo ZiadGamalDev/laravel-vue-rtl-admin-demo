@@ -1,0 +1,135 @@
+@import 'tailwindcss';
+
+@source '../**/*.blade.php';
+@source '../**/*.vue';
+@source '../**/*.ts';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    --font-sans: 'Cairo', ui-sans-serif, system-ui, sans-serif;
+    --color-brand-50: oklch(0.97 0.02 180);
+    --color-brand-100: oklch(0.93 0.05 180);
+    --color-brand-500: oklch(0.6 0.11 180);
+    --color-brand-600: oklch(0.52 0.1 180);
+    --color-brand-700: oklch(0.45 0.09 180);
+}
+
+@layer base {
+    html {
+        font-family: var(--font-sans);
+    }
+    /* Native controls (date pickers, scrollbars) follow the theme. */
+    html.dark {
+        color-scheme: dark;
+    }
+    /* Keep Latin-only values (emails, codes, phone numbers) readable inside RTL text. */
+    .ltr-value {
+        direction: ltr;
+        unicode-bidi: isolate;
+        display: inline-block;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        vertical-align: bottom;
+    }
+    /* Same height for text inputs and native selects. */
+    input.input:not([type='checkbox']),
+    select.input {
+        height: 2.5rem;
+    }
+    /*
+     * Text whose own direction may differ from the page (dir="auto"), aligned to the
+     * page's start edge. Long LTR text in an RTL page then still truncates at its end.
+     */
+    html[dir='rtl'] .align-page-start {
+        text-align: right;
+    }
+    html[dir='ltr'] .align-page-start {
+        text-align: left;
+    }
+    [dir='rtl'] .flip-rtl {
+        transform: scaleX(-1);
+    }
+}
+
+@utility input {
+    @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-xs placeholder:text-slate-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100;
+}
+
+@utility input-invalid {
+    @apply border-rose-400 focus:border-rose-500 focus:ring-rose-500/20;
+}
+
+@utility btn {
+    @apply inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60;
+}
+
+@utility btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700;
+}
+
+@utility btn-secondary {
+    @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700;
+}
+
+@utility btn-danger {
+    @apply btn bg-rose-600 text-white hover:bg-rose-700;
+}
+
+@utility alert-error {
+    @apply rounded-lg bg-rose-50 p-3 text-sm text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/30;
+}
+
+@utility card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-xs dark:border-slate-800 dark:bg-slate-900;
+}
+
+/* Table styles live in the components layer so utilities (e.g. text-end) can override them. */
+@layer components {
+    .data-table {
+        @apply w-full text-sm;
+    }
+    .data-table th {
+        @apply bg-slate-50 px-4 py-3 text-start text-xs font-bold whitespace-nowrap text-slate-500 dark:bg-slate-800/60 dark:text-slate-400;
+    }
+    .data-table td {
+        @apply border-t border-slate-100 px-4 py-3 text-slate-700 dark:border-slate-800 dark:text-slate-200;
+    }
+    .data-table tbody tr:hover td {
+        @apply bg-slate-50/70 dark:bg-slate-800/40;
+    }
+}
+
+/* Invoice print view: A4, no app chrome, colors kept. */
+@page {
+    size: A4;
+    margin: 0;
+}
+
+@media print {
+    html,
+    body {
+        background: #fff !important;
+    }
+    .no-print {
+        display: none !important;
+    }
+    .print-page {
+        padding: 0 !important;
+        background: #fff !important;
+        min-height: auto !important;
+    }
+    .invoice-sheet {
+        box-shadow: none !important;
+        max-width: none !important;
+        min-height: 297mm;
+        margin: 0 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    .invoice-sheet tr {
+        break-inside: avoid;
+    }
+}
